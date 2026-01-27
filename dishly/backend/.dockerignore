@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build
+target
+.m2
+node_modules
+
+# Documentation
+*.md
+docs
+
+# Configuration examples
+.env.example
+.env.local
+docker-compose.yml
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Other
+.github
+LICENSE
