@@ -37,6 +37,9 @@ export default function RecipeDetailPage() {
   const [showShareModal, setShowShareModal] = useState(false)
   const [isLoadingCollections, setIsLoadingCollections] = useState(false)
   const [isSavingCollections, setIsSavingCollections] = useState(false)
+  const [existingCollections, setExistingCollections] = useState<string[]>([])
+  const [newCollectionName, setNewCollectionName] = useState('')
+  const [isCreatingCollection, setIsCreatingCollection] = useState(false)
 
   useEffect(() => {
     if (recipeId) {
@@ -83,8 +86,29 @@ export default function RecipeDetailPage() {
   const loadCollections = async () => {
     try {
       setIsLoadingCollections(true)
-      const data = await collectionService.getCollections()
-      setCollections(data)
+      let data = await collectionService.getCollections()
+      
+      // Deduplicate collections by name and remove "Liked Recipes"
+      const uniqueCollections = Array.from(
+        new Map(data.map((collection) => [collection.name, collection])).values()
+      ).filter((collection) => collection.name !== 'Liked Recipes')
+      
+      setCollections(uniqueCollections)
+      
+      // Check which collections already contain this recipe
+      const recipeInCollections: string[] = []
+      for (const collection of uniqueCollections) {
+        try {
+          const recipes = await collectionService.getCollectionRecipes(collection.id)
+          if (recipes.some((r) => r.id === recipeId)) {
+            recipeInCollections.push(collection.id)
+          }
+        } catch (error) {
+          console.error(`Failed to fetch recipes for collection ${collection.id}:`, error)
+        }
+      }
+      setExistingCollections(recipeInCollections)
+      setSelectedCollections(recipeInCollections)
     } catch (error) {
       toast.error('Failed to load collections')
     } finally {
@@ -100,16 +124,61 @@ export default function RecipeDetailPage() {
     )
   }
 
+  const handleCreateNewCollection = async () => {
+    if (!newCollectionName.trim()) {
+      toast.error('Please enter a collection name')
+      return
+    }
+
+    // Check if collection already exists
+    if (collections.some((c) => c.name.toLowerCase() === newCollectionName.toLowerCase())) {
+      toast.error('Collection already exists')
+      return
+    }
+
+    try {
+      setIsCreatingCollection(true)
+      const newCollection = await collectionService.createCollection({
+        name: newCollectionName,
+      })
+      
+      // Add the new collection to the list
+      setCollections([...collections, newCollection])
+      
+      // Automatically select the new collection
+      setSelectedCollections([...selectedCollections, newCollection.id])
+      
+      setNewCollectionName('')
+      toast.success('Collection created!')
+    } catch (error) {
+      toast.error('Failed to create collection')
+    } finally {
+      setIsCreatingCollection(false)
+    }
+  }
+
   const handleSaveCollections = async () => {
     try {
       setIsSavingCollections(true)
-      // Add recipe to selected collections
-      for (const collectionId of selectedCollections) {
+      
+      // Determine which collections to add and which to remove
+      const collectionsToAdd = selectedCollections.filter(id => !existingCollections.includes(id))
+      const collectionsToRemove = existingCollections.filter(id => !selectedCollections.includes(id))
+      
+      // Add recipe to newly selected collections
+      for (const collectionId of collectionsToAdd) {
         await collectionService.addRecipeToCollection(collectionId, recipeId)
       }
-      toast.success('Recipe added to collections!')
+      
+      // Remove recipe from deselected collections
+      for (const collectionId of collectionsToRemove) {
+        await collectionService.removeRecipeFromCollection(collectionId, recipeId)
+      }
+      
+      toast.success('Collections updated!')
       setShowCollectionModal(false)
-      setSelectedCollections([])
+      setExistingCollections(selectedCollections)
+      setNewCollectionName('')
     } catch (error) {
       toast.error('Failed to save collections')
     } finally {
@@ -456,7 +525,8 @@ export default function RecipeDetailPage() {
                 <button
                   onClick={() => {
                     setShowCollectionModal(false)
-                    setSelectedCollections([])
+                    setSelectedCollections(existingCollections)
+                    setNewCollectionName('')
                   }}
                   className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
                 >
@@ -468,61 +538,114 @@ export default function RecipeDetailPage() {
                 <div className="flex justify-center py-8">
                   <Loader className="w-6 h-6 text-dishly-primary animate-spin" />
                 </div>
-              ) : collections.length > 0 ? (
+              ) : (
                 <>
-                  <div className="space-y-3 mb-6 max-h-64 overflow-y-auto">
-                    {collections.map((collection) => (
-                      <label
-                        key={collection.id}
-                        className="flex items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                  {/* Create New Collection Input */}
+                  <div className="mb-6 p-4 border border-dishly-primary/30 rounded-lg bg-dishly-primary/5">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Create New Collection
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newCollectionName}
+                        onChange={(e) => setNewCollectionName(e.target.value)}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            handleCreateNewCollection()
+                          }
+                        }}
+                        placeholder="Collection name..."
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-dishly-primary"
+                        disabled={isCreatingCollection}
+                      />
+                      <button
+                        onClick={handleCreateNewCollection}
+                        disabled={isCreatingCollection || !newCollectionName.trim()}
+                        className="px-3 py-2 bg-dishly-primary text-white rounded-lg font-semibold hover:bg-dishly-primary/90 disabled:opacity-50 transition-colors flex items-center gap-1 text-sm"
                       >
-                        <input
-                          type="checkbox"
-                          checked={selectedCollections.includes(collection.id)}
-                          onChange={() => handleCollectionToggle(collection.id)}
-                          className="w-4 h-4 text-dishly-primary rounded border-gray-300 focus:ring-dishly-primary"
-                        />
-                        <span className="ml-3 font-medium text-gray-900">{collection.name}</span>
-                      </label>
-                    ))}
+                        {isCreatingCollection ? (
+                          <Loader className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => {
-                        setShowCollectionModal(false)
-                        setSelectedCollections([])
-                      }}
-                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveCollections}
-                      disabled={isSavingCollections || selectedCollections.length === 0}
-                      className="flex-1 px-4 py-2 bg-dishly-primary text-white rounded-lg font-semibold hover:bg-dishly-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-                    >
-                      {isSavingCollections ? (
-                        <Loader className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Plus className="w-4 h-4" />
-                          Add ({selectedCollections.length})
-                        </>
-                      )}
-                    </button>
-                  </div>
+                  {collections.length > 0 ? (
+                    <>
+                      <div className="space-y-3 mb-6 max-h-64 overflow-y-auto">
+                        {collections.map((collection) => (
+                          <label
+                            key={collection.id}
+                            className="flex items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedCollections.includes(collection.id)}
+                              onChange={() => handleCollectionToggle(collection.id)}
+                              className="w-4 h-4 text-dishly-primary rounded border-gray-300 focus:ring-dishly-primary"
+                            />
+                            <span className="ml-3 font-medium text-gray-900">{collection.name}</span>
+                            {existingCollections.includes(collection.id) && (
+                              <span className="ml-auto text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-semibold">
+                                Added
+                              </span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => {
+                            setShowCollectionModal(false)
+                            setSelectedCollections(existingCollections)
+                            setNewCollectionName('')
+                          }}
+                          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSaveCollections}
+                          disabled={isSavingCollections || selectedCollections.length === 0}
+                          className="flex-1 px-4 py-2 bg-dishly-primary text-white rounded-lg font-semibold hover:bg-dishly-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                        >
+                          {isSavingCollections ? (
+                            <Loader className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Plus className="w-4 h-4" />
+                              Add ({selectedCollections.length})
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-center py-8">
+                      <p className="text-gray-600 mb-4">No collections yet</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setShowCollectionModal(false)
+                          }}
+                          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <Link
+                          href="/collections"
+                          className="flex-1 px-4 py-2 bg-dishly-primary text-white rounded-lg font-semibold hover:bg-dishly-primary/90 transition-colors text-center"
+                        >
+                          View Collections
+                        </Link>
+                      </div>
+                    </div>
+                  )}
                 </>
-              ) : (
-                <div className="text-center py-8">
-                  <p className="text-gray-600 mb-4">No collections yet</p>
-                  <Link
-                    href="/collections"
-                    className="text-dishly-primary hover:underline font-semibold"
-                  >
-                    Create a collection
-                  </Link>
-                </div>
               )}
             </div>
           </div>
